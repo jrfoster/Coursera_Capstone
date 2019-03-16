@@ -5,4 +5,4 @@ pdflatex Capstone_Week5.tex
 pdflatex Capstone_Week5.tex
 pdflatex Capstone_Week5.tex
 
-rm *.bbl *.aux *.blg *.log *.out *Notes.bib #*.tex
+rm *.bbl *.aux *.blg *.log *.out *Notes.bib *.tex
