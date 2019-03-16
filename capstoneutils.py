@@ -5,7 +5,7 @@ geolocating zip codes and other places using the Google Maps API, and obtains
 venue and category data from the Foursquare API. Other functions in this file 
 do some data manipulation and scrubbing as well
 
-Author: Jason Foster
+Author: Jason R. Foster
 
 Portions of this library adapted from information obtained from the following 
 sources:
@@ -22,10 +22,16 @@ from fastnumbers import fast_real   # For smart creation of integers or floaats 
 import requests                     # For making http requests during scraping
 import pandas as pd                 # Dataframes and other list operations
 import numpy as np                  # Various numerical and mathematical utilities
+import os                           # For determining current working directory
 from time import sleep              # To allow for a sleep during retries of http requests
 import pickle                       # Serialization for dataframes to avoid request caps
 import urllib.parse                 # For url-encoding query strings, mostly for Google
 from anytree import Node, search    # Fast tree implementation for Foursquare categories
+from selenium import webdriver      # Used only for saving png versions of Folium maps
+import logging                      # For saving output from what I would normally print
+
+# Go ahead and configure the logger, since this module will be run when its loaded
+logging.basicConfig(filename='capstone_util.log', filemode='w', level=logging.DEBUG)
 
 def clean_value(value):
     '''
@@ -39,6 +45,30 @@ def clean_value(value):
     value -- A string to clean
     '''
     return value.split()[0].replace(',','').replace('$','').strip()
+
+def save_map(map, html_fn, png_fn, html_dir='maps', delay=3):
+    '''
+    Uses the Selenium driver (geckodriver.exe) to save the rendered folium map
+    as a png image
+    
+    Keyword Arguments:
+    map -- The rendered folium map to save
+    html_fn -- The HTML filename to use when saving the rendered map
+    png_fn -- The PNG filename, including path, to use when saving the image
+    html_dir -- A subdirectory to use when saving the HTML. Default is 'maps'
+    delay -- The number of seconds to sleep to allow Selenium to capture
+    '''
+    # Save the map as an HTML file
+    tmpurl = 'file://{cwd}/{subdir}/{file}'.format(cwd=os.getcwd(), subdir=html_dir, file=html_fn)
+    map.save('{cwd}/{subdir}/{file}'.format(cwd=os.getcwd(), subdir=html_dir, file=html_fn))
+     
+    # Open a browser window that displays the map, wait for it to load
+    # then grab a screenshot
+    browser = webdriver.Firefox()
+    browser.get(tmpurl)
+    sleep(delay)
+    browser.save_screenshot(png_fn)
+    browser.quit()    
 
 
 def add_categories(cats, r):
@@ -67,6 +97,7 @@ def get_category_tree(trycount=0):
     Keyword Arguments:
     trycount -- the count of current tries, for retry. Default is 0
     '''
+    logger = logging.getLogger('capstoneutils.get_category_tree')
     VERSION = '20190101'
     
     # Retrieve the categories from Foursquare  
@@ -79,7 +110,7 @@ def get_category_tree(trycount=0):
     if (result['meta']['code'] != 200 and trycount < 5):
         sleep(0.5)
         t = trycount + 1
-        print('Retrying Foursquare CATEGORY due to failure. Trycount={}'.format(t))
+        logger.warning('Retrying Foursquare CATEGORY due to failure. Trycount={}'.format(t))
         return get_category_tree(trycount=t)
     
     cats = result['response']['categories']
@@ -210,6 +241,7 @@ def get_place_latlon(place, trycount=0):
     Keyword Arguments:
     place -- The place to geolocate
     '''
+    logger = logging.getLogger('capstoneutils.get_place_latlon')
     url = 'https://maps.googleapis.com/maps/api/geocode/json?address={}&key={}'.format(
         urllib.parse.quote_plus(place),
         rg.GOOGLE_API_KEY
@@ -220,7 +252,7 @@ def get_place_latlon(place, trycount=0):
     if len(response['results']) == 0 and trycount < 5:
         sleep(.05)
         t = trycount + 1
-        print('Retrying Google Maps GEOCODE due to failure. Trycount={}'.format(t))
+        logger.warning('Retrying Google Maps GEOCODE due to failure. Trycount={}'.format(t))
         return get_place_latlon(place, trycount=t)
     
     latlon = response['results'][0]['geometry']['location']
@@ -246,6 +278,7 @@ def explore_location(lat, lon, limit=100, section=None, trycount=0):
     lon -- the longitude of the location
     limit -- The optional limit on the number of results. Default is 100
     '''
+    logger = logging.getLogger('capstoneutils.explore_location')
     VERSION = '20190101'
     
     # Get the top 100 venues in this postal code from the Foursquare API and transform
@@ -266,7 +299,7 @@ def explore_location(lat, lon, limit=100, section=None, trycount=0):
     if (result['meta']['code'] != 200 and trycount < 5):
         sleep(0.5)
         t = trycount + 1
-        print('Retrying Foursquare EXPLORE due to failure. Trycount={}'.format(t))
+        logger.warning('Retrying Foursquare EXPLORE due to failure. Trycount={}'.format(t))
         return explore_location(lat, lon, limit, section, trycount=t)
 
     return requests.get(url).json()
@@ -290,9 +323,6 @@ def get_nearby_venues(rownames, latitudes, longitudes, section=None):
         
         # The actual results are in the items array of groups
         groups = results['response']['groups'][0]['items']
-        
-        if len(results['response']['groups']) == 0:
-            print('No groups. Response={}'.format(results)) 
         
         # Return relevant information for each nearby venue.
         for v in groups:
@@ -362,11 +392,12 @@ def load_demographics():
     Does the heavy lifting of loading the pre-done demographics from a serialized
     version or builds it from scratch using the utility methods in this library
     '''
+    logger = logging.getLogger('capstoneutils.load_demographics')
     demog_file = './all_demog.pkl'
     loaded = False
     try:
         with open(demog_file, 'rb') as f:
-            print("Geocoding: Using pickled demographics/geocoding.")
+            logger.info("Geocoding: Using pickled demographics/geocoding.")
             results = pickle.load(f)
         loaded = True
 
@@ -374,7 +405,7 @@ def load_demographics():
         pass
 
     if not loaded:
-        print('Building demographics/geocoding data from scratch. Please be patient.')
+        logger.info('Building demographics/geocoding data from scratch. Please be patient.')
         # Scrape the pages with the lists of zip codes for the Denver metro area
         pages = {
             'https://www.zip-codes.com/county/co-denver.asp': ['Denver']
@@ -386,7 +417,7 @@ def load_demographics():
         }
 
         den_zips = scrape_zipcodes(pages)
-        print('ZipCodes: Successfully scraped {} zip codes.'.format(den_zips.shape[0]))
+        logger.info('ZipCodes: Successfully scraped {} zip codes.'.format(den_zips.shape[0]))
 
         # Scrape the other pages for demographics for each zip code in the list
         l = []
@@ -402,11 +433,11 @@ def load_demographics():
         results.drop(results[results.ZipCode == '80225'].index, inplace=True)
         results.drop(results[results.ZipCode == '80045'].index, inplace=True)
         results.drop_duplicates('ZipCode', keep='first', inplace=True)
-        print("Demographics: Successfully scraped {} features for {} Zip Codes".format(results.shape[1], results.shape[0]))
+        logger.info("Demographics: Successfully scraped {} features for {} Zip Codes".format(results.shape[1], results.shape[0]))
         
         # Geolocate the zip codes using the Google API
         results[['Latitude', 'Longitude']] = results.apply(lambda row: pd.Series(get_latlon(row)), axis=1)
-        print("Geocoding: Successfully geocoded {} Zip Codes".format(results.shape[0]))
+        logger.info("Geocoding: Successfully geocoded {} Zip Codes".format(results.shape[0]))
 
         # Reorder the columns and pickle the results        
         results = results[['ZipCode','Latitude', 'Longitude'] + [c for c in results if c not in ['ZipCode','Latitude', 'Longitude']]]
@@ -427,12 +458,13 @@ def load_foursquare_venues(names, lats, lngs):
     lats -- A sequence of latitudes to use for each request
     lngs -- A sequence of longitudes to use for each request
     '''
+    logger = logging.getLogger('capstoneutils.load_foursquare_venues')
     venue_file = './fsq_venues.pkl'
     loaded = False
     
     try:
         with open(venue_file, 'rb') as f:
-            print("Using pickled venue data.")
+            logger.info("Using pickled venue data.")
             result_venues = pickle.load(f)
         loaded = True
         
@@ -440,14 +472,56 @@ def load_foursquare_venues(names, lats, lngs):
         pass
     
     if not loaded:
-        print('Building Foursquare venue data from scratch. Please be patient.')
+        logger.info('Building Foursquare venue data from scratch. Please be patient.')
         result_venues = get_nearby_venues(rownames=names, latitudes=lats, longitudes=lngs)
         gp = result_venues.groupby(by='ZipCode').count()
-        print("Top Venues: Successfully retrieved {} features for {} Zip Codes.".format(gp.shape[1], gp.shape[0]))
+        logger.info("Top Venues: Successfully retrieved {} features for {} Zip Codes.".format(gp.shape[1], gp.shape[0]))
         
         result_venues.to_pickle(venue_file)
 
     return result_venues
+
+
+def load_coffee_shops(names, lats, lngs):
+    '''
+    Does the heavy lifting to get the coffee venue data from Foursquare or from a file if
+    its already been retrieved. The method takes three sequences as paramenters, 
+    though it might be easier to think of the parameters as a lists of tuples, one
+    for each request that is made to Foursquare.
+    
+    Keyword Arguments:
+    names -- A sequence of rownames to use for each request
+    lats -- A sequence of latitudes to use for each request
+    lngs -- A sequence of longitudes to use for each request
+    '''
+    logger = logging.getLogger('capstoneutils.load_coffee_shops')
+    coffee_file= './fsq_coffee.pkl'
+    loaded = False
+    
+    try:
+        with open(coffee_file, 'rb') as f:
+            logger.info("Using pickled coffee shop data")
+            results = pickle.load(f)
+        loaded = True
+    
+    except:
+        pass
+    
+    if not loaded:
+        logger.info("Building Foursquare coffee shop data from scratch. Please be patient.")
+        # Get the shops from the candidates using Foursquare EXPLORE with a section = 'coffee'
+        # then create and sort a pivot table showing the counts with the margin totals calculated
+        candidate_shops = get_coffee_shops(rownames=names,latitudes=lats,longitudes=lngs)
+        grouped_shops = candidate_shops.groupby(['ZipCode','IsFranchise'], as_index=False)['Venue'].count()
+        results = pd.pivot_table(grouped_shops, index='ZipCode', columns='IsFranchise', values='Venue', aggfunc='sum', margins=True, fill_value=0)
+        results.reset_index(inplace=True)
+        results = results[:-1]
+        results[['PctInd']] = results.apply(lambda row: pd.Series(row['False'] / row['All']), axis=1)
+        
+        results.to_pickle(coffee_file)
+    
+    return results
+
 
 def get_top_venues(result_venues, num_top_venues=10):
     '''
@@ -489,6 +563,14 @@ def get_top_venues(result_venues, num_top_venues=10):
     return result_venues_sorted
 
 def is_franchise(x, fr_list):
+    '''
+    Uses the given list to determine if the row representing a venue is a franchise or not.
+    Intended to be used with apply.
+    
+    Keyword Arguments:
+    x -- Row containing a venue name to determine whether its a franchise or not
+    fr_list -- The list of venues to compare with
+    '''
     isFranchise = 'False'
     orig_name = x['Venue']
     name = orig_name.split('(')[0].split('#')[0].strip()
@@ -506,6 +588,15 @@ def is_franchise(x, fr_list):
     return [isFranchise]
 
 def get_coffee_shops(rownames, latitudes, longitudes):
+    '''
+    Utilizes the Foursquare EXPLORE endpoint with a section parameter to obtain a recommended
+    list of coffee shops for the given places
+    
+    Keyword Arguments:
+    rownames -- A sequence of names intended to help later identify rows
+    latitudes -- A sequence of latitudes to lookup
+    longitudes -- A sequence of longitudes to lookup
+    '''
     franchises = scrape_franchises()
     fr_vals = franchises['Name'].values
     
@@ -525,6 +616,10 @@ def get_coffee_shops(rownames, latitudes, longitudes):
     return candidate_cs
         
 def get_nextvenues(trycount=0):
+    '''
+    Returns the top 5 most commonly visited venues for my venue
+    '''
+    logger = logging.getLogger('capstoneutils.get_nextvenues')
     VERSION = '20190101'
     
     # Get the top 100 venues in this postal code from the Foursquare API and transform
@@ -540,7 +635,7 @@ def get_nextvenues(trycount=0):
     if (results['meta']['code'] != 200 and trycount < 5):
         sleep(0.5)
         t = trycount + 1
-        print('Retrying Foursquare NEXTVENUES due to failure. Trycount={}'.format(t))
+        logger.warning('Retrying Foursquare NEXTVENUES due to failure. Trycount={}'.format(t))
         return get_nextvenues(trycount=t)
     
     venues_list=[]
